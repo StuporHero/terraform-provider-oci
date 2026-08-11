@@ -536,6 +536,9 @@ func getConfigProviders(d *schema.ResourceData, auth string) ([]oci_common.Confi
 		if err != nil {
 			return nil, fmt.Errorf("can not get oke workload indentity based auth config provider %v", err)
 		}
+		if region, ok := d.GetOk(globalvar.RegionAttrName); ok {
+			okeWorkloadIdentityConfigProvider = okeWorkloadIdentityConfigurationProviderForRegion(okeWorkloadIdentityConfigProvider, oci_common.StringToRegion(region.(string)))
+		}
 		configProviders = append(configProviders, okeWorkloadIdentityConfigProvider)
 	case strings.ToLower(globalvar.AuthWorkloadIdentityFederation):
 		workloadIdentityFederationConfigProvider, err := newWorkloadIdentityFederationConfigurationProvider(workloadIdentityFederationConfigFromResourceData(d))
@@ -663,6 +666,25 @@ func (p ResourceDataConfigProvider) PrivateRSAKey() (key *rsa.PrivateKey, err er
 	}
 
 	return nil, fmt.Errorf("can not get private_key or private_key_path from Terraform configuration")
+}
+
+// okeWorkloadIdentityWithRegion wraps an OKE Workload Identity configuration
+// provider so that Region() reports the region configured in the provider
+// block instead of the region of the cluster the workload runs in. The SDK has
+// no ForRegion variant of OkeWorkloadIdentityConfigurationProvider (unlike
+// ResourcePrincipal and InstancePrincipal), so the override is applied by
+// wrapping; the workload identity token exchange itself is unaffected.
+type okeWorkloadIdentityWithRegion struct {
+	oci_common_auth.ConfigurationProviderWithClaimAccess
+	region oci_common.Region
+}
+
+func (p okeWorkloadIdentityWithRegion) Region() (string, error) {
+	return string(p.region), nil
+}
+
+func okeWorkloadIdentityConfigurationProviderForRegion(delegate oci_common_auth.ConfigurationProviderWithClaimAccess, region oci_common.Region) oci_common_auth.ConfigurationProviderWithClaimAccess {
+	return okeWorkloadIdentityWithRegion{ConfigurationProviderWithClaimAccess: delegate, region: region}
 }
 
 var instancePrincipalConfigurationProviderForRegion = defaultInstancePrincipalConfigurationProviderForRegion
