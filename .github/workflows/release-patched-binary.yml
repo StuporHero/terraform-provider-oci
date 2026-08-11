@@ -1,0 +1,88 @@
+# Fork-carry workflow (SunsoftERP estate). NOT for upstream.
+#
+# Builds the patched terraform-provider-oci binary for linux amd64+arm64 and
+# publishes the zips as GitHub Release assets, laid out exactly like the
+# releases.hashicorp.com zips (asset terraform-provider-oci_<ver>_<os>_<arch>.zip
+# containing binary terraform-provider-oci_v<ver>), so the crossplane-provider-oci
+# image build can consume them via TERRAFORM_PROVIDER_DOWNLOAD_URL_PREFIX with no
+# other changes. The provider VERSION stays the upstream base version — the patch
+# is carried in the binary content, the release TAG names the patch level.
+name: Release Patched Provider Binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v8.22.0-wi-region.1)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  PROVIDER_VERSION: "8.22.0"
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate tag input
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid tag input: $INPUT_TAG" >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build linux binaries
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            mkdir -p "dist/linux_${arch}"
+            CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
+              go build -trimpath -ldflags "-s -w" \
+              -o "dist/linux_${arch}/terraform-provider-oci_v${PROVIDER_VERSION}" .
+          done
+
+      - name: Package zips
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            (cd "dist/linux_${arch}" && zip "../terraform-provider-oci_${PROVIDER_VERSION}_linux_${arch}.zip" "terraform-provider-oci_v${PROVIDER_VERSION}")
+          done
+          sha256sum dist/*.zip
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Patched terraform-provider-oci ${PROVIDER_VERSION} binary (fork-carry)."
+            echo ""
+            echo "Patch: honor the configured region under OKEWorkloadIdentity auth."
+            echo "Base: upstream v${PROVIDER_VERSION}, commit $(git rev-parse HEAD)."
+            echo ""
+            echo '```'
+            sha256sum dist/*.zip | sed 's|dist/||'
+            echo '```'
+          } > release-notes.md
+          gh release create "$INPUT_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "$INPUT_TAG" \
+            --notes-file release-notes.md \
+            dist/terraform-provider-oci_${PROVIDER_VERSION}_linux_amd64.zip \
+            dist/terraform-provider-oci_${PROVIDER_VERSION}_linux_arm64.zip
